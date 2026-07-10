@@ -6,7 +6,7 @@ The application utilizes local browser caching (IndexedDB) to operate 100% offli
 
 ---
 
-## 🚀 Key Features
+##  Key Features
 
 * **Offline Capabilities**: Run and load the application without internet connectivity.
 * **Hashed Offline Authentication**: Secure offline login comparing SHA-256 salted hashes against locally cached credentials.
@@ -19,7 +19,7 @@ The application utilizes local browser caching (IndexedDB) to operate 100% offli
 
 ---
 
-## 🛠️ Technology Stack
+##  Technology Stack
 
 * **Backend**: Django REST Framework, PostgreSQL (with SQLite development fallback).
 * **Frontend**: React (Vite SPA/PWA), Dexie.js (ACID-compliant IndexedDB library), TailwindCSS/Vanilla CSS.
@@ -27,7 +27,7 @@ The application utilizes local browser caching (IndexedDB) to operate 100% offli
 
 ---
 
-## 📁 Directory Structure
+##  Directory Structure
 
 ```text
 CampusOS/
@@ -52,7 +52,7 @@ CampusOS/
 
 ---
 
-## ⚙️ Quick Start
+##  Quick Start
 
 ### Default Administrator Credentials
 - **Username**: `admin`
@@ -100,7 +100,7 @@ CampusOS/
 
 ---
 
-## 🔄 Verification & Unit Testing
+##  Verification & Unit Testing
 
 To verify the synchronization replication conflict checkers, navigate to the `backend/` folder and run the Django tests suite:
 ```bash
