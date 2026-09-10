@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { saveLocal } from '../db/dbHelpers';
-import { Award, Plus, FileSpreadsheet, BookOpen, CheckCircle, Save } from 'lucide-react';
+import { Award, Plus, FileSpreadsheet, BookOpen, CheckCircle, Save, Download } from 'lucide-react';
 
 export default function GradesEntry({ user }) {
-  const [activeStepTab, setActiveStepTab] = useState('curriculum'); // 'curriculum', 'sheet'
+  const [activeStepTab, setActiveStepTab] = useState('sheet'); // Default to sheet view
   const [selectedClass, setSelectedClass] = useState('');
   const [selectedSection, setSelectedSection] = useState('');
   const [selectedTerm, setSelectedTerm] = useState('');
@@ -29,10 +29,38 @@ export default function GradesEntry({ user }) {
   const students = useLiveQuery(() => db.students.where('is_deleted').equals(0).toArray()) || [];
   const academicRecords = useLiveQuery(() => db.academic_records.where('is_deleted').equals(0).toArray()) || [];
 
-  // Filter students based on selected ClassLevel and Section (using string comparison for ID robustness)
+  // Scoped lists for teacher
+  const isTeacher = user?.role === 'TEACHER';
+  const hasAssignedClass = !!user?.assigned_class_id;
+
+  const availableClasses = isTeacher
+    ? (hasAssignedClass ? classes.filter(c => String(c.id) === String(user.assigned_class_id)) : [])
+    : classes;
+
+  const availableSubjects = (isTeacher && user?.assigned_subject_ids && user.assigned_subject_ids.length > 0)
+    ? subjects.filter(s => user.assigned_subject_ids.includes(s.id))
+    : subjects;
+
+  // Auto lock/filter for Teacher role
+  useEffect(() => {
+    if (isTeacher) {
+      if (hasAssignedClass) {
+        setSelectedClass(user.assigned_class_id);
+      } else {
+        setSelectedClass('');
+      }
+      if (user.assigned_subject_ids && user.assigned_subject_ids.length > 0) {
+        if (!selectedSubject || !user.assigned_subject_ids.includes(selectedSubject)) {
+          setSelectedSubject(user.assigned_subject_ids[0]);
+        }
+      }
+    }
+  }, [user, isTeacher, hasAssignedClass, availableClasses, availableSubjects]);
+
+  // Filter students based on selected ClassLevel and Section
   const activeEnrollments = enrollments.filter(e => 
     String(e.class_level_id) === String(selectedClass) && 
-    String(e.section_id) === String(selectedSection)
+    (!selectedSection || String(e.section_id) === String(selectedSection))
   );
   
   const activeStudents = activeEnrollments.map(e => students.find(s => String(s.id) === String(e.student_id))).filter(Boolean);
@@ -77,6 +105,54 @@ export default function GradesEntry({ user }) {
         [field]: val
       }
     }));
+  };
+
+  // Export Marksheet to Excel (.csv)
+  const handleExportCSV = () => {
+    if (!activeStudents.length || !selectedSubject || !selectedClass || !selectedTerm) {
+      alert('Please select a Class, Term, and Subject with active students before exporting.');
+      return;
+    }
+
+    const className = classes.find(c => String(c.id) === String(selectedClass))?.name || 'Class';
+    const subjectName = subjects.find(s => String(s.id) === String(selectedSubject))?.name || 'Subject';
+    const termName = terms.find(t => String(t.id) === String(selectedTerm))?.name || 'Term';
+
+    let csvContent = "data:text/csv;charset=utf-8,";
+    csvContent += `Student Name,Admission ID,SBA Mark (${currentSbaWeight}%),Exam Mark (${currentExamWeight}%),Final Score (100%),Grade Letter,Remarks\n`;
+
+    activeStudents.forEach(student => {
+      const record = academicRecords.find(r => 
+        String(r.student_id) === String(student.id) && 
+        String(r.term_id) === String(selectedTerm) && 
+        String(r.subject_id) === String(selectedSubject)
+      );
+      const localInput = marksSheetData[student.id] || {};
+      const sbaScore = localInput.sba_score !== undefined ? localInput.sba_score : (record ? record.sba_score.toString() : '');
+      const examScore = localInput.exam_score !== undefined ? localInput.exam_score : (record ? record.exam_score.toString() : '');
+      const remarks = localInput.remarks !== undefined ? localInput.remarks : (record ? record.remarks : '');
+
+      const sba = parseFloat(sbaScore || 0);
+      const exam = parseFloat(examScore || 0);
+      const liveFinalScore = (sba * (currentSbaWeight / 100.0)) + (exam * (currentExamWeight / 100.0));
+      const hasValues = sbaScore !== '' || examScore !== '';
+      const liveGradeLetter = hasValues ? calculateGrade(liveFinalScore) : (record ? record.grade_letter : '-');
+      const finalScoreStr = hasValues ? liveFinalScore.toFixed(1) : (record ? parseFloat(record.final_score).toFixed(1) : '-');
+
+      const nameStr = `"${student.first_name} ${student.last_name}"`;
+      const admStr = `"${student.admission_number}"`;
+      const remarksStr = `"${remarks.replace(/"/g, '""')}"`;
+
+      csvContent += `${nameStr},${admStr},${sbaScore},${examScore},${finalScoreStr},${liveGradeLetter},${remarksStr}\n`;
+    });
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Marksheet_${className}_${subjectName}_${termName}.csv`.replace(/\s+/g, '_'));
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   // Submit all grades (Save Marksheet)
@@ -161,6 +237,20 @@ export default function GradesEntry({ user }) {
 
   return (
     <div className="space-y-6 animate-fade-in" style={{ color: 'var(--text-dark)' }}>
+      {isTeacher && !hasAssignedClass && (
+        <div className="glass-card" style={{ display: 'flex', alignItems: 'center', gap: '16px', backgroundColor: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)', padding: '20px' }}>
+          <div style={{ padding: '12px', borderRadius: '12px', backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#b45309' }}>
+            <Award className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 style={{ fontSize: '15px', fontWeight: '700', color: 'var(--text-dark)', margin: '0 0 2px 0' }}>No Class Assigned</h3>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+              You have not been assigned to a class level yet. Contact your administrator in Staff Management to assign your class level before managing academic marks or subjects.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Workflow Tabs */}
       <div className="tabs-header">
         <button
@@ -352,9 +442,10 @@ export default function GradesEntry({ user }) {
                   }}
                   className="input-field select-field"
                   style={{ fontSize: '13px' }}
+                  disabled={user?.role === 'TEACHER' && !!user?.assigned_class_id}
                 >
                   <option value="">Select Class</option>
-                  {classes.map(c => (
+                  {availableClasses.map(c => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
                 </select>
@@ -385,7 +476,7 @@ export default function GradesEntry({ user }) {
                   style={{ fontSize: '13px' }}
                 >
                   <option value="">Select Subject</option>
-                  {subjects.map(sub => (
+                  {availableSubjects.map(sub => (
                     <option key={sub.id} value={sub.id}>{sub.name}</option>
                   ))}
                 </select>
@@ -393,9 +484,9 @@ export default function GradesEntry({ user }) {
             </div>
           </div>
 
-          {selectedClass && selectedSection && selectedTerm && selectedSubject ? (
+          {selectedClass && selectedTerm && selectedSubject ? (
             <div className="space-y-4">
-              {/* Active Grading Split Display */}
+              {/* Active Grading Split Display & Export Actions */}
               <div className="flex-row-space" style={{ padding: '16px', backgroundColor: 'var(--primary-glow)', border: '1px solid rgba(79, 70, 229, 0.1)', borderRadius: '12px' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <span style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-dark)' }}>
@@ -404,15 +495,28 @@ export default function GradesEntry({ user }) {
                   <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Auto-calculates grades in real time. Remember to click Save before switching subjects.</span>
                 </div>
                 {activeStudents.length > 0 && (
-                  <button 
-                    type="button"
-                    onClick={handleSaveMarksheet}
-                    className="btn btn-primary"
-                    style={{ padding: '10px 18px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Save className="w-4 h-4" />
-                    Save Marksheet
-                  </button>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={handleExportCSV}
+                      className="btn btn-secondary"
+                      style={{ padding: '10px 16px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                    >
+                      <Download className="w-4 h-4" />
+                      Export Excel (.csv)
+                    </button>
+                    {user?.role !== 'ADMIN' && (
+                      <button 
+                        type="button"
+                        onClick={handleSaveMarksheet}
+                        className="btn btn-primary"
+                        style={{ padding: '10px 18px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                      >
+                        <Save className="w-4 h-4" />
+                        Save Marksheet
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -473,6 +577,7 @@ export default function GradesEntry({ user }) {
                                 className="input-field"
                                 style={{ width: '110px', textAlign: 'center', fontSize: '13px', padding: '8px 12px' }}
                                 placeholder="0.0"
+                                disabled={user?.role === 'ADMIN'}
                               />
                             </td>
                             <td>
@@ -485,6 +590,7 @@ export default function GradesEntry({ user }) {
                                 className="input-field"
                                 style={{ width: '110px', textAlign: 'center', fontSize: '13px', padding: '8px 12px' }}
                                 placeholder="0.0"
+                                disabled={user?.role === 'ADMIN'}
                               />
                             </td>
                             <td style={{ fontWeight: '800', color: 'var(--primary)', textAlign: 'center' }}>
@@ -525,6 +631,7 @@ export default function GradesEntry({ user }) {
                                 className="input-field"
                                 style={{ fontSize: '13px', padding: '8px 12px' }}
                                 placeholder="Teacher remarks..."
+                                disabled={user?.role === 'ADMIN'}
                               />
                             </td>
                           </tr>
@@ -542,12 +649,17 @@ export default function GradesEntry({ user }) {
                 </div>
 
                 {/* Save Grades Control Button */}
-                {activeStudents.length > 0 && (
+                {activeStudents.length > 0 && user?.role !== 'ADMIN' && (
                   <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '10px' }}>
                     <button type="submit" className="btn btn-primary" style={{ padding: '12px 32px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <Save className="w-4 h-4" />
                       Save & Sync Marksheet
                     </button>
+                  </div>
+                )}
+                {user?.role === 'ADMIN' && (
+                  <div style={{ padding: '12px', backgroundColor: 'rgba(79, 70, 229, 0.08)', borderRadius: '10px', textAlign: 'center', color: 'var(--primary)', fontWeight: '600', fontSize: '12px' }}>
+                    📖 View Only Mode (Admin Profile) — Marks and Exam Scores can only be submitted or modified by Class Teachers.
                   </div>
                 )}
               </form>

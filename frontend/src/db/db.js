@@ -3,8 +3,8 @@ import Dexie from 'dexie';
 export const db = new Dexie('CampusOSDatabase');
 
 // Define database schema using snake_case table names to match Django models exactly
-db.version(3).stores({
-  users: 'id, username, role, is_deleted',
+db.version(4).stores({
+  users: 'id, username, role, staff_category, assigned_class_id, is_deleted',
   schools: 'id, name, is_deleted',
   academic_years: 'id, display_name, is_current, is_deleted',
   academic_terms: 'id, academic_year_id, is_current, is_deleted',

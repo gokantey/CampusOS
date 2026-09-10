@@ -8,7 +8,7 @@ import {
   CreditCard, ShieldAlert, CheckCircle, ChevronRight, ArrowLeft, Pencil, Trash2, X, Check
 } from 'lucide-react';
 
-export default function Students() {
+export default function Students({ user }) {
   const [isAddingStudent, setIsAddingStudent] = useState(false);
   const [wizardStep, setWizardStep] = useState(1); // 1: Setup, 2: Register Profile, 3: Class Enrollment
   const [activeProfileTab, setActiveProfileTab] = useState('progress'); // 'progress', 'fees'
@@ -25,13 +25,13 @@ export default function Students() {
   const [guardianContact, setGuardianContact] = useState('');
 
   // Extra biodata fields matching Behance mockup
-  const [religion, setReligion] = useState('Christian');
-  const [bloodGroup, setBloodGroup] = useState('B+');
-  const [address, setAddress] = useState('1962 Harrison Street, San Francisco, CA 94103');
-  const [fatherName, setFatherName] = useState('Richard Berge');
-  const [fatherContact, setFatherContact] = useState('+1660-965-4668');
-  const [motherName, setMotherName] = useState('Maren Berge');
-  const [motherContact, setMotherContact] = useState('+1660-687-7027');
+  const [religion, setReligion] = useState('');
+  const [bloodGroup, setBloodGroup] = useState('');
+  const [address, setAddress] = useState('');
+  const [fatherName, setFatherName] = useState('');
+  const [fatherContact, setFatherContact] = useState('');
+  const [motherName, setMotherName] = useState('');
+  const [motherContact, setMotherContact] = useState('');
 
   // Form states for Step 3: Class Enrollment
   const [selectedStudent, setSelectedStudent] = useState('');
@@ -48,6 +48,8 @@ export default function Students() {
   // Edit Profile state
   const [isEditing, setIsEditing] = useState(false);
   const [editFirstName, setEditFirstName] = useState('');
+  const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('ALL');
+  const [hoveredPoint, setHoveredPoint] = useState(null);
   const [editLastName, setEditLastName] = useState('');
   const [editDob, setEditDob] = useState('');
   const [editGender, setEditGender] = useState('');
@@ -87,6 +89,27 @@ export default function Students() {
   const studentAccounts = useLiveQuery(() => db.student_accounts.where('is_deleted').equals(0).toArray()) || [];
   const paymentReceipts = useLiveQuery(() => db.payment_receipts.where('is_deleted').equals(0).toArray()) || [];
   const subjects = useLiveQuery(() => db.subjects.where('is_deleted').equals(0).toArray()) || [];
+
+  // Auto-generate Admission ID based on pattern COS-YYYY-XXXX
+  useEffect(() => {
+    if (wizardStep === 2 && !admNum) {
+      const year = new Date().getFullYear();
+      let maxSeq = 0;
+      students.forEach(s => {
+        if (s.admission_number && s.admission_number.startsWith(`COS-${year}-`)) {
+          const parts = s.admission_number.split('-');
+          if (parts.length === 3) {
+            const seq = parseInt(parts[2], 10);
+            if (!isNaN(seq) && seq > maxSeq) {
+              maxSeq = seq;
+            }
+          }
+        }
+      });
+      const nextId = `COS-${year}-${(maxSeq + 1).toString().padStart(4, '0')}`;
+      setAdmNum(nextId);
+    }
+  }, [wizardStep, students, admNum]);
   
   // Submit new Student Profile (Step 2)
   const handleRegisterStudent = async (e) => {
@@ -119,13 +142,13 @@ export default function Students() {
       setGender('Male');
       setGuardianName('');
       setGuardianContact('');
-      setReligion('Christian');
-      setBloodGroup('B+');
-      setAddress('1962 Harrison Street, San Francisco, CA 94103');
-      setFatherName('Richard Berge');
-      setFatherContact('+1660-965-4668');
-      setMotherName('Maren Berge');
-      setMotherContact('+1660-687-7027');
+      setReligion('');
+      setBloodGroup('');
+      setAddress('');
+      setFatherName('');
+      setFatherContact('');
+      setMotherName('');
+      setMotherContact('');
       
       // Select the student in form and advance wizard step to Enrollment
       setSelectedStudent(saved.id);
@@ -235,6 +258,20 @@ export default function Students() {
     setIsEditing(false);
   };
 
+  // Delete student profile and their enrollments
+  const handleDeleteStudent = async () => {
+    if (!currentStudent) return;
+    if (!window.confirm(`Delete ${currentStudent.first_name} ${currentStudent.last_name}'s profile? This cannot be undone.`)) return;
+    // Soft-delete student
+    await deleteLocal('students', currentStudent.id);
+    // Soft-delete all their enrollments
+    const studentEnrollments = enrollments.filter(e => String(e.student_id) === String(currentStudent.id));
+    for (const enr of studentEnrollments) {
+      await deleteLocal('enrollments', enr.id);
+    }
+    setSelectedStudentId(null);
+  };
+
   // Populate edit form when selected student changes
   useEffect(() => {
     const student = students.find(s => String(s.id) === String(selectedStudentId || students[0]?.id));
@@ -256,11 +293,39 @@ export default function Students() {
     }
   }, [selectedStudentId, students]);
 
-  // Search filter for Roster
-  const filteredStudents = students.filter(student => {
-    const term = searchQuery.toLowerCase();
-    const fullName = `${student.first_name} ${student.last_name}`.toLowerCase();
-    return fullName.includes(term) || student.admission_number.toLowerCase().includes(term);
+  // Teacher scoping: restrict student list if logged in as teacher with assigned class
+  const isTeacher = user?.role === 'TEACHER';
+  const hasAssignedClass = !!user?.assigned_class_id;
+
+  const scopedStudents = isTeacher
+    ? (hasAssignedClass
+        ? students.filter(s => enrollments.some(e => String(e.student_id) === String(s.id) && String(e.class_level_id) === String(user.assigned_class_id)))
+        : [])
+    : students;
+
+  // Robust Search filter for Roster (matches name, ID, parent/guardian, and class)
+  const filteredStudents = scopedStudents.filter(student => {
+    const term = (searchQuery || '').trim().toLowerCase();
+    if (!term) return true;
+    const fn = (student.first_name || '').toLowerCase();
+    const ln = (student.last_name || '').toLowerCase();
+    const fullName = `${fn} ${ln}`;
+    const adm = (student.admission_number || '').toLowerCase();
+    const gName = (student.guardian_name || '').toLowerCase();
+    const fName = (student.father_name || '').toLowerCase();
+    const mName = (student.mother_name || '').toLowerCase();
+
+    const enr = enrollments.find(e => String(e.student_id) === String(student.id));
+    const cName = enr ? (classes.find(c => String(c.id) === String(enr.class_level_id))?.name || '').toLowerCase() : '';
+
+    return fullName.includes(term) ||
+      fn.includes(term) ||
+      ln.includes(term) ||
+      adm.includes(term) ||
+      gName.includes(term) ||
+      fName.includes(term) ||
+      mName.includes(term) ||
+      cName.includes(term);
   });
 
   // Selected Student computed details (utilizes loose type coercion string comparison for robust key lookups)
@@ -290,17 +355,19 @@ export default function Students() {
             <h2 className="roster-title">Students</h2>
             <p className="roster-subtitle">{filteredStudents.length} profiles</p>
           </div>
-          <button 
-            onClick={() => {
-              setIsAddingStudent(true);
-              setWizardStep(1);
-            }}
-            className="btn btn-primary"
-            style={{ padding: '8px 12px', fontSize: '11px', borderRadius: '8px' }}
-          >
-            <Plus className="w-4 h-4" />
-            Add Student
-          </button>
+          {user?.role === 'ADMIN' && (
+            <button 
+              onClick={() => {
+                setIsAddingStudent(true);
+                setWizardStep(1);
+              }}
+              className="btn btn-primary"
+              style={{ padding: '8px 12px', fontSize: '11px', borderRadius: '8px' }}
+            >
+              <Plus className="w-4 h-4" />
+              Add Student
+            </button>
+          )}
         </div>
 
         <div className="roster-search-wrapper">
@@ -362,15 +429,35 @@ export default function Students() {
             );
           })}
           {filteredStudents.length === 0 && (
-            <p style={{ textAlign: 'center', fontSize: '12px', color: 'var(--text-muted)', padding: '32px 0' }}>No matching students found.</p>
+            <div style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--text-muted)' }}>
+              {isTeacher && !hasAssignedClass ? (
+                <>
+                  <ShieldAlert className="w-8 h-8 text-amber-500" style={{ margin: '0 auto 8px' }} />
+                  <p style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-dark)', marginBottom: '4px' }}>No Class Assigned</p>
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>You have not been assigned to a class level yet. Please contact your school administrator.</p>
+                </>
+              ) : (
+                <p style={{ margin: 0 }}>No matching students found.</p>
+              )}
+            </div>
           )}
         </div>
       </div>
 
       {/* Right Panel: Details or Guided Wizard */}
       <div className="details-panel-container">
-        
-        {isAddingStudent ? (
+        {isTeacher && !hasAssignedClass ? (
+          <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', minHeight: '400px', padding: '32px' }}>
+            <ShieldAlert className="w-16 h-16 text-amber-500" style={{ marginBottom: '16px', opacity: 0.7 }} />
+            <h2 style={{ fontSize: '18px', fontWeight: '700', color: 'var(--text-dark)', marginBottom: '8px' }}>Class Assignment Required</h2>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', maxWidth: '400px', lineHeight: '1.6', margin: 0 }}>
+              As a teacher, student records are strictly scoped to your assigned class. You currently have no class assigned to your account.
+            </p>
+            <div style={{ marginTop: '20px', padding: '12px 20px', borderRadius: '10px', backgroundColor: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)', fontSize: '12px', color: '#b45309', fontWeight: '600' }}>
+              Please ask an Admin to assign a class to you in Staff Management.
+            </div>
+          </div>
+        ) : isAddingStudent ? (
           /* Guided Chronological Registration Wizard */
           <div className="wizard-container">
             <div className="wizard-header">
@@ -597,7 +684,7 @@ export default function Students() {
                       value={lastName}
                       onChange={(e) => setLastName(e.target.value)}
                       className="input-field"
-                      placeholder="e.g. Berge"
+                      placeholder="e.g. Essilfie"
                       required
                     />
                   </div>
@@ -635,7 +722,6 @@ export default function Students() {
                     >
                       <option value="Male">Male</option>
                       <option value="Female">Female</option>
-                      <option value="Other">Other</option>
                     </select>
                   </div>
                 </div>
@@ -672,7 +758,7 @@ export default function Students() {
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
                     className="input-field"
-                    placeholder="1962 Harrison Street, San Francisco, CA 94103"
+                    placeholder="419 Essilfie Street, Mankessim, Central Region"
                   />
                 </div>
 
@@ -686,7 +772,7 @@ export default function Students() {
                       value={fatherName}
                       onChange={(e) => setFatherName(e.target.value)}
                       className="input-field"
-                      placeholder="Richard Berge"
+                      placeholder="David Essilfie"
                     />
                   </div>
                   <div className="form-group">
@@ -696,7 +782,7 @@ export default function Students() {
                       value={fatherContact}
                       onChange={(e) => setFatherContact(e.target.value)}
                       className="input-field"
-                      placeholder="+1660-965-4668"
+                      placeholder="+233542524855"
                     />
                   </div>
                 </div>
@@ -709,7 +795,7 @@ export default function Students() {
                       value={motherName}
                       onChange={(e) => setMotherName(e.target.value)}
                       className="input-field"
-                      placeholder="Maren Berge"
+                      placeholder="Maud Essilfie"
                     />
                   </div>
                   <div className="form-group">
@@ -719,7 +805,7 @@ export default function Students() {
                       value={motherContact}
                       onChange={(e) => setMotherContact(e.target.value)}
                       className="input-field"
-                      placeholder="+1660-687-7027"
+                      placeholder="+233531897319"
                     />
                   </div>
                 </div>
@@ -728,25 +814,23 @@ export default function Students() {
 
                 <div className="form-grid-2">
                   <div className="form-group">
-                    <label className="form-label">Guardian Name</label>
+                    <label className="form-label">Guardian Name (optional)</label>
                     <input
                       type="text"
                       value={guardianName}
                       onChange={(e) => setGuardianName(e.target.value)}
                       className="input-field"
                       placeholder="Mary Mensah"
-                      required
                     />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Guardian Contact</label>
+                    <label className="form-label">Guardian Contact (optional)</label>
                     <input
                       type="text"
                       value={guardianContact}
                       onChange={(e) => setGuardianContact(e.target.value)}
                       className="input-field"
                       placeholder="+233241234567"
-                      required
                     />
                   </div>
                 </div>
@@ -904,30 +988,109 @@ export default function Students() {
                     </div>
                   </div>
 
-                  {/* Edit Profile Button */}
-                  <button
-                    onClick={() => setIsEditing(e => !e)}
-                    style={{
-                      marginLeft: 'auto',
-                      background: isEditing ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.1)',
-                      border: '1px solid rgba(255,255,255,0.15)',
-                      borderRadius: '10px',
-                      padding: '8px 16px',
-                      color: '#ffffff',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      flexShrink: 0,
-                      alignSelf: 'flex-start',
-                    }}
-                  >
-                    {isEditing ? <X style={{ width: '14px', height: '14px' }} /> : <Pencil style={{ width: '14px', height: '14px' }} />}
-                    {isEditing ? 'Cancel' : 'Edit Profile'}
-                  </button>
+                  {/* Profile Actions: Edit, Enroll, Delete */}
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'flex-start', flexShrink: 0 }}>
+                    {/* Enroll button — only if not yet enrolled */}
+                    {!studentEnrollment && (
+                      <button
+                        onClick={() => {
+                          setSelectedStudent(currentStudent.id);
+                          setIsAddingStudent(true);
+                          setWizardStep(3);
+                        }}
+                        style={{
+                          background: 'rgba(16,185,129,0.15)',
+                          border: '1px solid rgba(16,185,129,0.3)',
+                          borderRadius: '10px',
+                          padding: '8px 16px',
+                          color: '#6ee7b7',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                        }}
+                      >
+                        <GraduationCap style={{ width: '14px', height: '14px' }} />
+                        Enroll
+                      </button>
+                    )}
+
+                    {/* Edit Profile toggle */}
+                    <button
+                      onClick={() => setIsEditing(e => !e)}
+                      style={{
+                        background: isEditing ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.1)',
+                        border: '1px solid rgba(255,255,255,0.15)',
+                        borderRadius: '10px',
+                        padding: '8px 16px',
+                        color: '#ffffff',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                      }}
+                    >
+                      {isEditing ? <X style={{ width: '14px', height: '14px' }} /> : <Pencil style={{ width: '14px', height: '14px' }} />}
+                      {isEditing ? 'Cancel' : 'Edit'}
+                    </button>
+
+                    {/* Delete Student */}
+                    <button
+                      onClick={handleDeleteStudent}
+                      style={{
+                        background: 'rgba(239,68,68,0.12)',
+                        border: '1px solid rgba(239,68,68,0.25)',
+                        borderRadius: '10px',
+                        padding: '8px 16px',
+                        color: '#fca5a5',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                      }}
+                    >
+                      <Trash2 style={{ width: '14px', height: '14px' }} />
+                      Delete
+                    </button>
+                  </div>
                 </div>
+
+                {/* Unenrolled notice — shown when student has no class enrollment */}
+                {!studentEnrollment && !isEditing && (
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '16px',
+                    padding: '14px 20px',
+                    backgroundColor: 'rgba(245,158,11,0.06)',
+                    border: '1px solid rgba(245,158,11,0.2)',
+                    borderRadius: '12px',
+                    marginBottom: '4px'
+                  }}>
+                    <GraduationCap style={{ width: '20px', height: '20px', color: 'var(--warning)', flexShrink: 0 }} />
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-dark)', margin: 0 }}>Not Enrolled in a Class</p>
+                      <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '2px 0 0' }}>This student has not been assigned to any class yet.</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setSelectedStudent(currentStudent.id);
+                        setIsAddingStudent(true);
+                        setWizardStep(3);
+                      }}
+                      className="btn btn-primary"
+                      style={{ padding: '8px 18px', fontSize: '12px', flexShrink: 0 }}
+                    >
+                      Enroll Now
+                    </button>
+                  </div>
+                )}
 
                 {/* 2. Edit Form or Basic Details Card */}
                 {isEditing ? (
@@ -995,11 +1158,11 @@ export default function Students() {
                     <div className="form-grid-2">
                       <div className="form-group">
                         <label className="form-label">Guardian Name</label>
-                        <input type="text" value={editGuardianName} onChange={e => setEditGuardianName(e.target.value)} className="input-field" required />
+                        <input type="text" value={editGuardianName} onChange={e => setEditGuardianName(e.target.value)} className="input-field" />
                       </div>
                       <div className="form-group">
                         <label className="form-label">Guardian Contact</label>
-                        <input type="text" value={editGuardianContact} onChange={e => setEditGuardianContact(e.target.value)} className="input-field" required />
+                        <input type="text" value={editGuardianContact} onChange={e => setEditGuardianContact(e.target.value)} className="input-field" />
                       </div>
                     </div>
                   </form>
@@ -1032,7 +1195,7 @@ export default function Students() {
                     </div>
                     <div className="detail-field">
                       <span className="detail-field-label">Father</span>
-                      <span className="detail-field-value" style={{ display: 'block' }}>{currentStudent.father_name || 'Richard Berge'}</span>
+                      <span className="detail-field-value" style={{ display: 'block' }}>{currentStudent.father_name || 'Richard Essilfie'}</span>
                       <a href={`tel:${currentStudent.father_contact || '+1660-965-4668'}`} className="detail-phone-link">
                         <Phone className="w-3.5 h-3.5" />
                         {currentStudent.father_contact || '+1660-965-4668'}
@@ -1040,7 +1203,7 @@ export default function Students() {
                     </div>
                     <div className="detail-field">
                       <span className="detail-field-label">Mother</span>
-                      <span className="detail-field-value" style={{ display: 'block' }}>{currentStudent.mother_name || 'Maren Berge'}</span>
+                      <span className="detail-field-value" style={{ display: 'block' }}>{currentStudent.mother_name || 'Maren Essilfie'}</span>
                       <a href={`tel:${currentStudent.mother_contact || '+1660-687-7027'}`} className="detail-phone-link">
                         <Phone className="w-3.5 h-3.5" />
                         {currentStudent.mother_contact || '+1660-687-7027'}
@@ -1070,13 +1233,24 @@ export default function Students() {
                   {/* Tab A: Academic Progress with custom SVG Line Graph */}
                   {activeProfileTab === 'progress' && (
                     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        {/* Subject Pills Row */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                        {/* Dynamic Subject Pills Row */}
                         <div className="pills-container" style={{ margin: 0 }}>
-                          <button className="pill-button active"><span className="pill-dot maths"></span>Maths</button>
-                          <button className="pill-button"><span className="pill-dot science"></span>Science</button>
-                          <button className="pill-button"><span className="pill-dot english"></span>English</button>
-                          <button className="pill-button"><span className="pill-dot history"></span>History</button>
+                          <button 
+                            onClick={() => setSelectedSubjectFilter('ALL')}
+                            className={`pill-button ${selectedSubjectFilter === 'ALL' ? 'active' : ''}`}
+                          >
+                            All Subjects
+                          </button>
+                          {subjects.map(s => (
+                            <button 
+                              key={s.id}
+                              onClick={() => setSelectedSubjectFilter(String(s.id))}
+                              className={`pill-button ${String(selectedSubjectFilter) === String(s.id) ? 'active' : ''}`}
+                            >
+                              {s.name}
+                            </button>
+                          ))}
                         </div>
                         {studentGrades.length > 0 && (
                           <span style={{ fontSize: '11px', backgroundColor: 'var(--primary-glow)', color: 'var(--primary)', padding: '5px 12px', borderRadius: '20px', fontWeight: 'bold' }}>
@@ -1085,72 +1259,109 @@ export default function Students() {
                         )}
                       </div>
 
-                      {/* Line Chart Component */}
-                      <div className="chart-wrapper" style={{ height: '240px', width: '100%' }}>
-                        <svg viewBox="0 0 500 220" className="w-full h-full" style={{ overflow: 'visible' }}>
-                          {/* Grid Lines */}
-                          <line x1="40" y1="20" x2="480" y2="20" stroke="#f1f5f9" strokeWidth="1" />
-                          <line x1="40" y1="60" x2="480" y2="60" stroke="#f1f5f9" strokeWidth="1" />
-                          <line x1="40" y1="100" x2="480" y2="100" stroke="#f1f5f9" strokeWidth="1" />
-                          <line x1="40" y1="140" x2="480" y2="140" stroke="#f1f5f9" strokeWidth="1" />
-                          <line x1="40" y1="180" x2="480" y2="180" stroke="#f1f5f9" strokeWidth="1" />
+                      {/* Dynamic SVG Line Chart Component */}
+                      <div className="chart-wrapper" style={{ height: '240px', width: '100%', position: 'relative' }}>
+                        {(() => {
+                          const filteredGrades = selectedSubjectFilter === 'ALL'
+                            ? studentGrades
+                            : studentGrades.filter(g => String(g.subject_id) === String(selectedSubjectFilter));
 
-                          {/* Y Axis Labels */}
-                          <text x="30" y="24" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">100%</text>
-                          <text x="30" y="64" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">75%</text>
-                          <text x="30" y="104" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">50%</text>
-                          <text x="30" y="144" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">25%</text>
-                          <text x="30" y="184" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">0%</text>
+                          if (filteredGrades.length === 0) {
+                            return (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', backgroundColor: '#f8fafc', borderRadius: '12px', border: '1px dashed var(--border-color)', color: 'var(--text-muted)' }}>
+                                <p style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-dark)' }}>No Grade Records Available</p>
+                                <p style={{ fontSize: '11px', marginTop: '4px' }}>Record SBA marks & exam scores in the Grades Entry tab to view graph trends.</p>
+                              </div>
+                            );
+                          }
 
-                          {/* Area Gradient Fill */}
-                          <defs>
-                            <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.25" />
-                              <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.0" />
-                            </linearGradient>
-                          </defs>
-                          <path 
-                            d="M 60 119.2 L 140 53.6 L 220 71.2 L 300 44 L 380 92 L 460 52 L 460 180 L 60 180 Z" 
-                            fill="url(#chartGradient)" 
-                          />
+                          const graphWidth = 400;
+                          const graphStartX = 60;
+                          const startY = 180;
+                          const topY = 30;
+                          const heightRange = startY - topY;
 
-                          {/* Line Path */}
-                          <path 
-                            d="M 60 119.2 L 140 53.6 L 220 71.2 L 300 44 L 380 92 L 460 52" 
-                            fill="none" 
-                            stroke="#f43f5e" 
-                            strokeWidth="3" 
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
+                          const pts = filteredGrades.map((g, idx) => {
+                            const subObj = subjects.find(s => String(s.id) === String(g.subject_id));
+                            const label = subObj ? subObj.name : `Subject ${idx + 1}`;
+                            const score = Math.min(100, Math.max(0, parseFloat(g.final_score || 0)));
+                            const x = filteredGrades.length === 1 
+                              ? 250 
+                              : graphStartX + (idx * (graphWidth / (filteredGrades.length - 1)));
+                            const y = startY - (score / 100) * heightRange;
+                            return { x, y, score, label, record: g };
+                          });
 
-                          {/* Dots */}
-                          <circle cx="60" cy="119.2" r="4" fill="#ffffff" stroke="#f43f5e" strokeWidth="2.5" />
-                          <circle cx="140" cy="53.6" r="6" fill="#f43f5e" stroke="#ffffff" strokeWidth="2.5" />
-                          <circle cx="220" cy="71.2" r="4" fill="#ffffff" stroke="#f43f5e" strokeWidth="2.5" />
-                          <circle cx="300" cy="44" r="4" fill="#ffffff" stroke="#f43f5e" strokeWidth="2.5" />
-                          <circle cx="380" cy="92" r="4" fill="#ffffff" stroke="#f43f5e" strokeWidth="2.5" />
-                          <circle cx="460" cy="52" r="4" fill="#ffffff" stroke="#f43f5e" strokeWidth="2.5" />
+                          const lineD = pts.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`).join(' ');
+                          const areaD = `${lineD} L ${pts[pts.length - 1].x} 180 L ${pts[0].x} 180 Z`;
 
-                          {/* Tooltip Speech Bubble */}
-                          <g transform="translate(140, 53.6)">
-                            <path 
-                              d="M -20 -38 L 20 -38 C 24 -38 24 -38 24 -34 L 24 -18 C 24 -14 24 -14 20 -14 L 6 -14 L 0 -8 L -6 -14 L -20 -14 C -24 -14 -24 -14 -24 -18 L -24 -34 C -24 -38 -24 -38 -20 -38 Z" 
-                              fill="#ffffff" 
-                              stroke="#e2e8f0" 
-                              strokeWidth="1.5"
-                            />
-                            <text x="0" y="-22" fill="#2d3748" fontSize="10" fontWeight="extrabold" textAnchor="middle">79%</text>
-                          </g>
+                          return (
+                            <svg viewBox="0 0 500 220" className="w-full h-full" style={{ overflow: 'visible' }}>
+                              {/* Grid Lines */}
+                              <line x1="40" y1="20" x2="480" y2="20" stroke="#f1f5f9" strokeWidth="1" />
+                              <line x1="40" y1="60" x2="480" y2="60" stroke="#f1f5f9" strokeWidth="1" />
+                              <line x1="40" y1="100" x2="480" y2="100" stroke="#f1f5f9" strokeWidth="1" />
+                              <line x1="40" y1="140" x2="480" y2="140" stroke="#f1f5f9" strokeWidth="1" />
+                              <line x1="40" y1="180" x2="480" y2="180" stroke="#f1f5f9" strokeWidth="1" />
 
-                          {/* X Axis Labels */}
-                          <text x="60" y="202" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="middle">Test 1</text>
-                          <text x="140" y="202" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="middle">Test 2</text>
-                          <text x="220" y="202" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="middle">Test 3</text>
-                          <text x="300" y="202" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="middle">Test 4</text>
-                          <text x="380" y="202" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="middle">Test 5</text>
-                          <text x="460" y="202" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="middle">Test 6</text>
-                        </svg>
+                              {/* Y Axis Labels */}
+                              <text x="30" y="24" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">100%</text>
+                              <text x="30" y="64" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">75%</text>
+                              <text x="30" y="104" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">50%</text>
+                              <text x="30" y="144" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">25%</text>
+                              <text x="30" y="184" fill="#a0aec0" fontSize="9" fontWeight="bold" textAnchor="end">0%</text>
+
+                              {/* Area Gradient Fill */}
+                              <defs>
+                                <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.25" />
+                                  <stop offset="100%" stopColor="var(--primary)" stopOpacity="0.0" />
+                                </linearGradient>
+                              </defs>
+                              <path d={areaD} fill="url(#chartGradient)" />
+
+                              {/* Dynamic Line Path */}
+                              <path 
+                                d={lineD} 
+                                fill="none" 
+                                stroke="var(--primary)" 
+                                strokeWidth="3" 
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+
+                              {/* Data Points & Interactive Tooltips */}
+                              {pts.map((pt, idx) => {
+                                const isHovered = hoveredPoint === idx;
+                                return (
+                                  <g key={idx} onMouseEnter={() => setHoveredPoint(idx)} onMouseLeave={() => setHoveredPoint(null)} style={{ cursor: 'pointer' }}>
+                                    <circle 
+                                      cx={pt.x} 
+                                      cy={pt.y} 
+                                      r={isHovered ? 7 : 5} 
+                                      fill={isHovered ? 'var(--primary)' : '#ffffff'} 
+                                      stroke="var(--primary)" 
+                                      strokeWidth="2.5" 
+                                    />
+                                    {/* Tooltip Bubble */}
+                                    {isHovered && (
+                                      <g transform={`translate(${pt.x}, ${pt.y - 12})`}>
+                                        <rect x="-35" y="-30" width="70" height="24" rx="6" fill="#1e293b" />
+                                        <text x="0" y="-14" fill="#ffffff" fontSize="10" fontWeight="bold" textAnchor="middle">
+                                          {pt.score}%
+                                        </text>
+                                      </g>
+                                    )}
+                                    {/* X Axis Label */}
+                                    <text x={pt.x} y="202" fill="#64748b" fontSize="9" fontWeight="bold" textAnchor="middle">
+                                      {pt.label.length > 8 ? pt.label.substring(0, 8) + '..' : pt.label}
+                                    </text>
+                                  </g>
+                                );
+                              })}
+                            </svg>
+                          );
+                        })()}
                       </div>
 
                       {/* Grades Table Sheet */}

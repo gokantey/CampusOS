@@ -152,11 +152,25 @@ export default function Finance({ user }) {
     window.print();
   };
 
-  // Search filter for Ledgers
+  // Search filter for Ledgers (handles null guards, admission ID, parent, and class name)
   const filteredStudents = students.filter(student => {
-    const term = searchQuery.toLowerCase();
-    const fullName = `${student.first_name} ${student.last_name}`.toLowerCase();
-    return fullName.includes(term) || student.admission_number.toLowerCase().includes(term);
+    const term = (searchQuery || '').trim().toLowerCase();
+    if (!term) return true;
+    const fn = (student.first_name || '').toLowerCase();
+    const ln = (student.last_name || '').toLowerCase();
+    const fullName = `${fn} ${ln}`;
+    const adm = (student.admission_number || '').toLowerCase();
+    const gName = (student.guardian_name || '').toLowerCase();
+
+    const enr = enrollments.find(e => String(e.student_id) === String(student.id));
+    const cName = enr ? (classes.find(c => String(c.id) === String(enr.class_level_id))?.name || '').toLowerCase() : '';
+
+    return fullName.includes(term) ||
+      fn.includes(term) ||
+      ln.includes(term) ||
+      adm.includes(term) ||
+      gName.includes(term) ||
+      cName.includes(term);
   });
 
   // Fetch billing state for selected payment student
@@ -299,9 +313,15 @@ export default function Finance({ user }) {
                   required
                 >
                   <option value="">Choose Student Roster Profile</option>
-                  {students.map(s => (
-                    <option key={s.id} value={s.id}>{s.first_name} {s.last_name} ({s.admission_number})</option>
-                  ))}
+                  {students.map(s => {
+                    const enr = enrollments.find(e => String(e.student_id) === String(s.id));
+                    const clsName = enr ? classes.find(c => String(c.id) === String(enr.class_level_id))?.name : null;
+                    return (
+                      <option key={s.id} value={s.id}>
+                        {s.first_name} {s.last_name} ({s.admission_number}){clsName ? ` - ${clsName}` : ''}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
@@ -396,6 +416,7 @@ export default function Finance({ user }) {
               <thead>
                 <tr>
                   <th>Student Account</th>
+                  <th>Class</th>
                   <th>Total Billed</th>
                   <th>Total Paid</th>
                   <th>Outstanding Balance</th>
@@ -409,12 +430,19 @@ export default function Finance({ user }) {
                     total_paid: 0,
                     balance: 0
                   };
+                  const enrollment = enrollments.find(e => String(e.student_id) === String(student.id));
+                  const studentClass = enrollment ? (classes.find(c => String(c.id) === String(enrollment.class_level_id))?.name || 'Unassigned') : 'Unassigned';
                   const balanceVal = parseFloat(account.balance);
                   return (
                     <tr key={student.id}>
                       <td style={{ fontWeight: '700', color: 'var(--text-dark)' }}>
                         <div>{student.first_name} {student.last_name}</div>
                         <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'monospace', marginTop: '2px' }}>ID: {student.admission_number}</div>
+                      </td>
+                      <td>
+                        <span style={{ fontSize: '11px', fontWeight: '700', color: 'var(--primary)', backgroundColor: 'var(--primary-glow)', padding: '3px 8px', borderRadius: '12px' }}>
+                          {studentClass}
+                        </span>
                       </td>
                       <td>GH¢ {parseFloat(account.total_billed).toFixed(2)}</td>
                       <td>GH¢ {parseFloat(account.total_paid).toFixed(2)}</td>
